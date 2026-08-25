@@ -220,33 +220,6 @@ class terrainGenerator {
             world.moisture.resize(width * height);
             world.temperature.resize(width * height);
             
-            /*                        
-            for (int y = 0; y < height; y++) {
-                for (int x = 0; x < width; x++) {
-                    // Elevation
-                    float e = elevNoise.GetNoise( (float)x, (float)y);
-                    e += detail.GetNoise((float)x, (float)y) * 0.08f;
-                    e -= calculateFalloff(x, y, width, height) * 2.0f;       // Pull edges toward deep water
-                    e  = std::max(-1.0f, std::min(1.0f, e));             // Keep the value in range
-                    
-                    // Moisture
-                    float m = moistureNoise.GetNoise((float)x, (float)y);
-                    m = (m + 1.0f) * 0.5f; // Normalize [0, 1]
-                    
-                    // Temperature
-                    float latitude = std::abs((y / (float)height) - 0.5f) * 2.0f; // 0 == equator | 1 == pole
-                    float t = 1.0f - latitude;                                       // Hot at equator
-                    t += tempNoise.GetNoise((float)x, (float)y) * 0.15f;       // Local variation
-                    t  = std::max(0.0f, std::min(1.0f, t));
-                    
-                    world.elevation[index]   = e;
-                    world.moisture[index]    = m;
-                    world.temperature[index] = t;
-                    index++;
-                }
-            }
-            */
-            
             auto computeRows = [&](int yStart, int yEnd) {
                 for (int y = yStart; y < yEnd; y++) {
                     int index = y * width;
