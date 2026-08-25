@@ -48,7 +48,7 @@ void printUsage(const char* programName) {
               << "  -w, --width <int>       Map width  (default 1920)\n"
               << "  -h, --height <int>      Map height (default 1080)\n"
               << "  -o, --output <path>     Output PNG filename (default date)\n"
-              << "  -s, --seed <int>        Noise seed (default 1337)\n"
+              << "  -s, --seed <int>        Noise seed (default random)\n"
               << "  -f, --frequency <float> Base noise frequency (default 0.0003)\n"
               << "      --octaves <int>     Fractal Octaves (default: 5)\n"
               << "      --help              Show this message\n";  
@@ -130,11 +130,57 @@ class terrainGenerator {
             std::vector<float> moisture;
             std::vector<float> temperature;
         };
+        struct ContinentCenter { float x, y, radiusX, radiusY, rotation, strength; };
         struct Color { uint8_t r, g, b; };
           
         WorldData world;        
         Config config;
                               
+        std::vector<ContinentCenter> generateContinentCenters(int width, int height, int seed, int count) {
+            std::mt19937 rng(seed);
+            std::uniform_real_distribution<float> xDist(width * 0.08f, width * 0.92f);
+            std::uniform_real_distribution<float> yDist(height * 0.10f, height * 0.90f);
+            std::uniform_real_distribution<float> radiusDist(width * 0.10f, width * 0.22f);
+            std::uniform_real_distribution<float> stretchDist(0.5f, 1.0f);
+            std::uniform_real_distribution<float> rotDist(0.0f, 3.14159f);
+            std::uniform_real_distribution<float> strengthDist(0.7f, 1.0f);            
+            
+            std::vector<ContinentCenter> centers;
+            for (int i = 0; i < count; i++) {
+                float baseRadius = radiusDist(rng);
+                centers.push_back({
+                    xDist(rng), yDist(rng),
+                    baseRadius,                    // radiusX
+                    baseRadius * stretchDist(rng), // radiusY (shorter than radiusX to avoid circles)
+                    rotDist(rng),
+                    strengthDist(rng)
+                });
+            }
+            return centers;
+        }
+        
+        float continentBump(float x, float y, const std::vector<ContinentCenter>& centers) {
+            float total = 0.0f;
+            
+            for (const auto& c : centers) {
+                float dx = x - c.x;
+                float dy = y - c.y;
+                
+                // Rotate in ellipse's local space
+                float cosA = std::cos(c.rotation), sinA = std::sin(c.rotation);
+                float localX = dx * cosA + dy * sinA;
+                float localY = -dx * sinA + dy * cosA;
+                
+                float dist = std::sqrt((localX * localX) / (c.radiusX * c.radiusX) + (localY * localY) / (c.radiusY * c.radiusY));
+                float bump = std::max(0.0f, 1.0f - dist);
+                
+                bump = bump * bump * (3.0f - 2.0f * bump); // Smoothstep taper
+                total += bump * c.strength;
+            }
+            
+            return std::min(total, 1.0f);
+        }
+        
         Color getBiomeColor(float elevation, float moisture, float temperature) {
             float e = (elevation + 1.0f) * 0.5f; // Normalize [0, 1]
             
@@ -166,8 +212,12 @@ class terrainGenerator {
             float nx = (2.0f * x / width)  - 1.0f;
             float ny = (2.0f * y / height) - 1.0f;
             
+            float xFalloff = std::max(0.0f, std::abs(nx) - 0.85f) / 0.15f; // Fades left/right edges
+            float yFalloff = std::max(0.0f, std::abs(ny) - 0.85f) / 0.15f; // Past 85% (top/bottom)
+            yFalloff = std::min(yFalloff, 1.0f);
+            
             // Distance from center
-            float distance = 1.0f - (1.0f - nx * nx) * (1.0f - ny * ny);
+            float distance = std::max(xFalloff, yFalloff);
             
             // Clamp distance [0, 1]
             distance = std::min(distance, 1.0f);
@@ -214,19 +264,36 @@ class terrainGenerator {
             tempNoise.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2S);
             tempNoise.SetFrequency(0.002f);
             tempNoise.SetSeed(9001);
-            
+
+            FastNoiseLite warpNoise;
+            warpNoise.SetDomainWarpType(FastNoiseLite::DomainWarpType_OpenSimplex2);
+            warpNoise.SetFrequency(0.0015f);
+            warpNoise.SetFractalType(FastNoiseLite::FractalType_DomainWarpProgressive);
+            warpNoise.SetFractalOctaves(3);
+            warpNoise.SetDomainWarpAmp(width * 0.06f); // Scales with map size
+                        
             WorldData world;
             world.elevation.resize(width * height);
             world.moisture.resize(width * height);
             world.temperature.resize(width * height);
             
+            auto majorcenters = generateContinentCenters(width, height, seed, 4);
+            auto islandCenters = generateContinentCenters(width, height, seed + 500, 8);
+            
             auto computeRows = [&](int yStart, int yEnd) {
                 for (int y = yStart; y < yEnd; y++) {
                     int index = y * width;
                     for (int x = 0; x < width; x++) {
-                        // Elevation
-                        float e = elevNoise.GetNoise( (float)x, (float)y);
-                        e += detail.GetNoise((float)x, (float)y) * 0.08f;
+                        float wx = (float)x;
+                        float wy = (float)y;
+                        warpNoise.GetNoise(wx, wy);
+                        
+                        // Elevation                       
+                        float continentMask = std::max(continentBump(wx, wy, majorcenters), continentBump(wx, wy, islandCenters) * 0.6f);
+                        float baseNoise = elevNoise.GetNoise(wx, wy);
+                        float detailNoise = detail.GetNoise(wx, wy);
+                        
+                        float e = (continentMask * 2.0f - 1.0f) * 0.75f + baseNoise * 0.5f + detailNoise * 0.08f;
                         e -= calculateFalloff(x, y, width, height) * 2.0f;       // Pull edges toward deep water
                         e  = std::max(-1.0f, std::min(1.0f, e));             // Keep the value in range
                     
