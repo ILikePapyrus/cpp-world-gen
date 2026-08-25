@@ -29,7 +29,12 @@ class terrainGenerator {
     private:
         int width;
         int height;
-        std::vector<float> terrain;        
+        struct WorldData {
+            std::vector<float> elevation;
+            std::vector<float> moisture;
+            std::vector<float> temperature;
+        };
+        WorldData world;
         struct Color { uint8_t r, g, b; };
                 
         int validateWidth(std::string userInput) {
@@ -60,7 +65,7 @@ class terrainGenerator {
                  {0.45f, {210, 200, 150}}, // Sand
                  {0.50f, {70,  140,  60}}, // Grass
                  {0.70f, {110,  90,  70}}, // Mountain
-                 {0.85f, {255, 255, 255}}, // Snow   
+                 {0.85f, {255, 255, 255}}, // Snow  
             };
             constexpr int n = sizeof(stops) / sizeof(Stop);
             
@@ -72,6 +77,31 @@ class terrainGenerator {
             }
             
             return normalized < stops[0].pos ? stops[0].color : stops[n - 1].color;
+        }
+        
+        Color getBiomeColor(float elevation, float moisture, float temperature) {
+            float e = (elevation + 1.0f) * 0.5f; // Normalize [0, 1]
+            
+            // Water and high-elevation
+            if (e < 0.40f) return { 20,  40, 110}; // Deep water
+            if (e < 0.46f) return { 60, 110, 200}; // Shallow water
+            if (e < 0.50f) return {210, 200, 150}; // Sand
+            if (e > 0.85f) return {255, 255, 255}; // Snow
+            if (e > 0.75f) return {130, 120, 110}; // Rock/Mountain
+            
+            // Land biomes
+            if (temperature > 0.65f) {
+                if (moisture < 0.25f) return {230, 210, 130}; // Desert
+                if (moisture < 0.55f) return {200, 185, 100}; // Savanna
+                return {60, 140, 40};                         // Tropical rainforest
+            } else if (temperature > 0.35f) {
+                if (moisture < 0.25f) return {180, 175, 120}; // Dry shrubland/steppe
+                if (moisture < 0.60f) return { 90, 150,  60}; // Grassland
+                return {40, 110, 50};                         // Temperate forest
+            } else {
+                if (moisture < 0.30f) return {190, 195, 190}; // Tundra
+                return {70, 110, 90};                         // Taiga/boreal forest
+            }
         }
         
         // Calculate distance between pixel and border
@@ -108,26 +138,19 @@ class terrainGenerator {
             height = validateHeight(rawHeight);
             
             ScopedTimer timer("Generation");
-            terrain = generate(width, height);
+            world = generate(width, height);
             
-            /*
-            for (float element : terrain) {
-                std::cout << element << std::endl;
-            }
-            */
-            
-            std::cout << "TOT: " << terrain.size() << std::endl;;
+            std::cout << "TOT Elevation: " << world.elevation.size() << std::endl;
         }
         
-        std::vector<float> generate(int width, int height) {
-            FastNoiseLite noise;
-            // Generator settings
-            noise.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2);
-            noise.SetFrequency(0.0013f);
-            noise.SetFractalType(FastNoiseLite::FractalType_FBm);
-            noise.SetFractalOctaves(5);
-            noise.SetFractalLacunarity(2.0f);
-            noise.SetFractalGain(0.5f);
+        WorldData generate(int width, int height) {
+            FastNoiseLite elevNoise;
+            elevNoise.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2S);
+            elevNoise.SetFrequency(0.003f);
+            elevNoise.SetFractalType(FastNoiseLite::FractalType_FBm);
+            elevNoise.SetFractalOctaves(5);
+            elevNoise.SetFractalLacunarity(2.0f);
+            elevNoise.SetFractalGain(0.5f);            
             
             FastNoiseLite detail;
             detail.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2S);
@@ -135,32 +158,59 @@ class terrainGenerator {
             detail.SetFractalType(FastNoiseLite::FractalType_FBm);
             detail.SetFractalOctaves(3);
             
+            FastNoiseLite moistureNoise;
+            moistureNoise.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2S);
+            moistureNoise.SetFrequency(0.0015f);
+            moistureNoise.SetFractalType(FastNoiseLite::FractalType_FBm);
+            moistureNoise.SetFractalOctaves(4);
+            moistureNoise.SetSeed(1337);
+            
+            FastNoiseLite tempNoise;
+            tempNoise.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2S);
+            tempNoise.SetFrequency(0.002f);
+            tempNoise.SetSeed(9001);
+            
+            WorldData world;
+            world.elevation.resize(width * height);
+            world.moisture.resize(width * height);
+            world.temperature.resize(width * height);
+            
             int index = 0;
             std::vector<float> noiseData(width * height);
             
             for (int y = 0; y < height; y++) {
                 for (int x = 0; x < width; x++) {
-                    float value   = noise.GetNoise( (float)x, (float)y);
-                    float detailV = detail.GetNoise((float)x, (float)y);
-                    float falloff = calculateFalloff(x, y, width, height);
+                    // Elevation
+                    float e = elevNoise.GetNoise( (float)x, (float)y);
+                    e += detail.GetNoise((float)x, (float)y) * 0.08f;
+                    e -= calculateFalloff(x, y, width, height) * 2.0f;       // Pull edges toward deep water
+                    e  = std::max(-1.0f, std::min(1.0f, e));             // Keep the value in range
                     
-                    value += detailV * 0.08f;
-                    value -= falloff * 2.0f;                                     // Pull edges toward deep water
-                    value  = std::max(-1.0f, std::min(1.0f, value)); // Keep the value in range
+                    // Moisture
+                    float m = moistureNoise.GetNoise((float)x, (float)y);
+                    m = (m + 1.0f) * 0.5f; // Normalize [0, 1]
                     
-                    noiseData[index++] = value;
+                    // Temperature
+                    float latitude = std::abs((y / (float)height) - 0.5f) * 2.0f; // 0 == equator | 1 == pole
+                    float t = 1.0f - latitude;                                       // Hot at equator
+                    t += tempNoise.GetNoise((float)x, (float)y) * 0.15f;       // Local variation
+                    t  = std::max(0.0f, std::min(1.0f, t));
+                    
+                    world.elevation[index]   = e;
+                    world.moisture[index]    = m;
+                    world.temperature[index] = t;
+                    index++;
                 }
             }
             
-            return noiseData;
+            return world;
         }
         
         void saveToImage(const std::string filename) {
             std::vector<uint8_t> imageData(width * height * 3);
             
-            for (size_t i = 0; i < terrain.size(); i++) {
-                float normalized = (terrain[i] + 1.0f) * 0.5f;
-                Color c = getColorForValue(normalized);
+            for (size_t i = 0; i < world.elevation.size(); i++) {
+                Color c = getBiomeColor(world.elevation[i], world.moisture[i], world.temperature[i]);
                 
                 imageData[i * 3 + 0] = c.r;
                 imageData[i * 3 + 1] = c.g;
@@ -179,7 +229,10 @@ class terrainGenerator {
         // Getters
         int getWidth()  const { return width;  }
         int getHeight() const { return height; }
-        std::vector<float> getTerrain() const { return terrain; }
+        WorldData getWorld() const { return world; }
+        std::vector<float> getElevation() const { return world.elevation; }
+        std::vector<float> getMoisture() const { return world.moisture; }
+        std::vector<float> getTemperature() const { return world.temperature; }
         
         void print() {
             std::cout << "Validated WIDTH:  " << width  << std::endl;
