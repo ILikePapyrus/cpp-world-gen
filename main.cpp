@@ -538,6 +538,22 @@ class terrainGenerator {
             stbi_write_png(filename.c_str(), config.width, config.height, 3, imageData.data(), config.width * 3);
         }
         
+        void saveHeightmap(const std::string filename) {
+            std::vector<uint8_t> imageData(config.width * config.height);
+            
+            for (size_t i = 0; i < world.elevation.size(); i++) {
+                float v = (world.elevation[i] + 1.0f) * 0.5f;
+                v = std::max(0.0f, std::min(1.0f, v));
+                imageData[i] = static_cast<uint8_t>(v * 255.0f);
+            }
+            
+            int result = stbi_write_png(filename.c_str(), config.width, config.height, 1, imageData.data(), config.width);
+            
+            if (!result) {
+                std::cout << "ERROR SAVING HEIGHTMAP!!" << std::endl;
+            }
+        }
+        
         // Getter
         const Config& getConfig() const { return config; }
         int getWidth() const { return config.width; }
@@ -556,11 +572,13 @@ int main(int argc, char* argv[]) {
         terrainGenerator generator(config);
         ScopedTimer timer("Save to disk");
         
-        std::string terrainPath = config.output_dir + "/" + config.output_file;
-        std::string regionPath  = config.output_dir + "/" + config.output_file + "_REGION";
+        std::string terrainPath   = config.output_dir + "/" + config.output_file;
+        std::string regionPath    = config.output_dir + "/" + config.output_file + "_REGION";
+        std::string heightmapPath = config.output_dir + "/" + config.output_file + "_HEIGHTMAP";
         
         generator.saveToImage(terrainPath);
         generator.saveRegionMap(regionPath);
+        generator.saveHeightmap(heightmapPath);
         
         std::cout << "Filename: " << config.output_file << std::endl;
         std::cout << "Saved to: " << config.output_dir  << "/" << std::endl;
