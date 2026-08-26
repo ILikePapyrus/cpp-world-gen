@@ -16,6 +16,7 @@
 #include <stdexcept>
 #include <random>
 #include <thread>
+#include <filesystem>
 
 #include "FastNoiseLite.h"
 
@@ -39,6 +40,7 @@ struct Config {
     int width               = 1920;
     int height              = 1080;
     std::string output_file = "";
+    std::string output_dir  = "";
     std::optional<int> seed;
     float frequency         = 0.003f;
     int octaves             = 5;
@@ -50,11 +52,12 @@ void printUsage(const char* programName) {
               << "Options:\n"
               << "  -w, --width <int>       Map width  (default 1920)\n"
               << "  -h, --height <int>      Map height (default 1080)\n"
-              << "  -o, --output <path>     Output PNG filename (default date)\n"
               << "  -s, --seed <int>        Noise seed (default random)\n"
               << "  -f, --frequency <float> Base noise frequency (default 0.0003)\n"
               << "      --octaves <int>     Fractal Octaves (default: 5)\n"
               << "      --regions <int>     Number of regions (default: 6)\n"
+              << "  -o, --output <path>     Output PNG filename (default date)\n"
+              << "  -d, --output-dir <path> Output directory (default /filename/)\n"
               << "      --help              Show this message\n";  
 }
 
@@ -64,6 +67,10 @@ std::string getSystemDate() {
     std::strftime(std::data(timeString), std::size(timeString), "%FT%TZ", std::localtime(&time));
             
     return timeString;
+}
+
+void ensureDirectory(const std::string& dir) {
+    std::filesystem::create_directory(dir);
 }
 
 Config parseArgs(int argc, char* argv[]) {
@@ -87,6 +94,9 @@ Config parseArgs(int argc, char* argv[]) {
         }
         else if (arg == "-o" || arg == "--output") {
             config.output_file = nextValue(arg);
+        }
+        else if (arg == "-d" || arg == "--output_dir") {
+            config.output_dir = nextValue(arg);
         }
         else if (arg == "-s" || arg == "--seed") {
             config.seed = std::stoi(nextValue(arg));
@@ -116,6 +126,10 @@ Config parseArgs(int argc, char* argv[]) {
         config.output_file = getSystemDate();
     }
 
+    if (config.output_dir.empty()) {
+        config.output_dir = getSystemDate();
+    }
+    
     if (!config.seed.has_value()) {
         std::random_device rd;
         std::mt19937 gen(rd());
@@ -537,13 +551,19 @@ class terrainGenerator {
 int main(int argc, char* argv[]) {
     try {
         Config config = parseArgs(argc, argv);
-        
+        ensureDirectory(config.output_dir);
+                
         terrainGenerator generator(config);
         ScopedTimer timer("Save to disk");
-        generator.saveToImage(config.output_file);
+        
+        std::string terrainPath = config.output_dir + "/" + config.output_file;
+        std::string regionPath  = config.output_dir + "/" + config.output_file + "_REGION";
+        
+        generator.saveToImage(terrainPath);
+        generator.saveRegionMap(regionPath);
+        
         std::cout << "Filename: " << config.output_file << std::endl;
-        std::string regionMapName = config.output_file.append("_REGION");
-        generator.saveRegionMap(regionMapName);
+        std::cout << "Saved to: " << config.output_dir  << "/" << std::endl;
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << std::endl;
         return 1;
