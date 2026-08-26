@@ -52,6 +52,7 @@ void printUsage(const char* programName) {
               << "Options:\n"
               << "  -w, --width <int>       Map width  (default: 1920)\n"
               << "  -h, --height <int>      Map height (default: 1080)\n"
+              << "  -m, --merc-map          Generate a Mercator Map (5632x2160) | OVERRIDES -w && -h\n"
               << "  -s, --seed <int>        Noise seed (default: random)\n"
               << "  -f, --frequency <float> Base noise frequency (default: 0.0003)\n"
               << "      --octaves <int>     Fractal Octaves (default: 5)\n"
@@ -96,6 +97,10 @@ Config parseArgs(int argc, char* argv[]) {
         } 
         else if (arg == "-h" || arg == "--height") {
             config.height = std::stoi(nextValue(arg));
+        }
+        else if (arg == "-m" || arg == "--merc-map") {
+            config.width  = 5632;
+            config.height = 2160;
         }
         else if (arg == "-o" || arg == "--output") {
             config.output_file = nextValue(arg);
@@ -620,6 +625,7 @@ int main(int argc, char* argv[]) {
         // Start disk timer
         ScopedTimer timer("Save to disk");
         
+        // Create paths for each img that will be saved to disk
         std::string terrainPath   = config.output_dir + "/" + config.output_file + ".png";
         std::string regionPath    = config.output_dir + "/" + config.output_file + "_REGION.png";
         std::string heightmapPath = config.output_dir + "/" + config.output_file + "_HEIGHTMAP.png";
