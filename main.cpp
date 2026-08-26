@@ -2,9 +2,11 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <ctime>
 #include <exception>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <vector>
 #include <iterator>
@@ -40,6 +42,7 @@ struct Config {
     std::optional<int> seed;
     float frequency         = 0.003f;
     int octaves             = 5;
+    int numRegions          = 6;
 };
 
 void printUsage(const char* programName) {
@@ -51,6 +54,7 @@ void printUsage(const char* programName) {
               << "  -s, --seed <int>        Noise seed (default random)\n"
               << "  -f, --frequency <float> Base noise frequency (default 0.0003)\n"
               << "      --octaves <int>     Fractal Octaves (default: 5)\n"
+              << "      --regions <int>     Number of regions (default: 6)\n"
               << "      --help              Show this message\n";  
 }
 
@@ -93,6 +97,9 @@ Config parseArgs(int argc, char* argv[]) {
         else if (arg == "--octaves") {
             config.octaves = std::stoi(nextValue(arg));
         }
+        else if (arg == "--regions") {
+            config.numRegions = std::stoi(nextValue(arg));
+        }
         else if (arg == "--help") {
             printUsage(argv[0]);
             std::exit(0);
@@ -129,13 +136,133 @@ class terrainGenerator {
             std::vector<float> elevation;
             std::vector<float> moisture;
             std::vector<float> temperature;
+            std::vector<int>   regionId;
         };
         struct ContinentCenter { float x, y, radiusX, radiusY, rotation, strength; };
+        struct RegionCenter { float x, y; };
         struct Color { uint8_t r, g, b; };
           
         WorldData world;        
         Config config;
                               
+        std::vector<int> labelLandmasses(const std::vector<float>& elevation, int width, int height, int& landmassCount) {
+            std::vector<int> landId(width * height, -1);
+            int currentId = 0;
+            
+            auto isLand = [&](int idx) {
+                float e = (elevation[idx] + 1.0f) * 0.5f;
+                return e >= 0.50f;
+            };
+            
+            std::vector<int> stack;
+            for (int start = 0; start < width * height; start++) {
+                if (!isLand(start) || landId[start] != -1) continue;
+                
+                // BFS/DFS flood fill
+                landId[start] = currentId;
+                stack.push_back(start);
+                
+                while (!stack.empty()) {
+                    int idx = stack.back();
+                    stack.pop_back();
+                    int x = idx % width;
+                    int y = idx / width;
+                    
+                    static const int dx[] = {1, -1, 0, 0};
+                    static const int dy[] = {0, 0, 1, -1};
+                    for (int d = 0; d < 4; d++) {
+                        int nx = x + dx[d], ny = y + dy[d];
+                        if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+                        int nIdx = ny * width + nx;
+                        if (isLand(nIdx) && landId[nIdx] == -1) {
+                            landId[nIdx] = currentId;
+                            stack.push_back(nIdx);
+                        }
+                    }
+                }
+                currentId++;
+            }
+            
+            landmassCount = currentId;
+            return landId;
+        }
+        
+        std::vector<RegionCenter> generateRegionSeeds(const std::vector<float>& elevation, int width, int height, int seed, int totalRegions) {
+            int landmassCount = 0;
+            std::vector<int> landId = labelLandmasses(elevation, width, height, landmassCount);
+            
+            // Group land pixel indices by landmass
+            std::vector<std::vector<int>> pixelsByLandmass(landmassCount);
+            for (int idx = 0; idx < width * height; idx++) {
+                if (landId[idx] >= 0) {
+                    pixelsByLandmass[landId[idx]].push_back(idx);
+                }
+            }
+            
+            // Total land area
+            size_t totalLandPixels = 0;
+            for (auto& px : pixelsByLandmass) totalLandPixels += px.size();
+            
+            std::mt19937 rng (seed + 777);
+            std::vector<RegionCenter> seeds;
+            
+            for (int i = 0; i < landmassCount; i++) {
+                if (pixelsByLandmass[i].empty()) continue;
+                
+                // Proportional share of totalRegions, min 1 * landmass
+                int allocated = std::max(1, (int)std::round(
+                    totalRegions * (double)pixelsByLandmass[i].size() / (double)totalLandPixels
+                ));
+                
+                std::shuffle(pixelsByLandmass[i].begin(), pixelsByLandmass[i].end(), rng);
+                int toPlace = std::min(allocated, (int)pixelsByLandmass[i].size());
+                
+                for (int j = 0; j < toPlace; j++) {
+                    int idx = pixelsByLandmass[i][j];
+                    seeds.push_back({(float)(idx % width), (float)(idx / width)});
+                }
+            }
+            
+            return seeds;
+        }
+        
+        std::vector<int> assignRegions(const std::vector<RegionCenter>& seeds, int width, int height) {
+            std::vector<int> regionId(width * height, -1);
+            
+            auto computeRows = [&](int yStart, int yEnd) {
+                for (int y = yStart; y < yEnd; y++) {
+                    int index = y * width;
+                    for (int x = 0; x < width; x++) {
+                        float bestDist = std::numeric_limits<float>::max();
+                        int bestId = -1;
+                        for (size_t i = 0; i < seeds.size(); i++) {
+                            float dx = x - seeds[i].x;
+                            float dy = y - seeds[i].y;
+                            float  d = dx * dx + dy * dy;
+                            if (d < bestDist) {
+                                bestDist = d;
+                                bestId = (int)i;
+                            }
+                        }
+                        
+                        regionId[index++] = bestId;
+                    }
+                }
+            };
+            
+            unsigned int numThreads = std::max(1u, std::thread::hardware_concurrency());
+            std::vector<std::thread> threads;
+            int rowsPerThread = height/numThreads;
+            for (unsigned int i = 0; i < numThreads; i++) {
+                int yStart = i * rowsPerThread;
+                int yEnd   = (i == numThreads - 1) ? height : yStart + rowsPerThread;
+                threads.emplace_back(computeRows, yStart, yEnd);
+            }
+            for (auto& t : threads) t.join();
+            
+            return regionId;
+        }
+        
         std::vector<ContinentCenter> generateContinentCenters(int width, int height, int seed, int count) {
             std::mt19937 rng(seed);
             std::uniform_real_distribution<float> xDist(width * 0.08f, width * 0.92f);
@@ -233,6 +360,9 @@ class terrainGenerator {
             ScopedTimer timer("Generation");
             world = generate(config.width, config.height, config.seed.value(), config.frequency, config.octaves);
             
+            auto seeds = generateRegionSeeds(world.elevation, config.width, config.height, config.seed.value(), config.numRegions);
+            world.regionId = assignRegions(seeds, config.width, config.height);
+            
             std::cout << "TOT: " << world.elevation.size() << std::endl;
         }
         
@@ -286,7 +416,7 @@ class terrainGenerator {
                     for (int x = 0; x < width; x++) {
                         float wx = (float)x;
                         float wy = (float)y;
-                        warpNoise.GetNoise(wx, wy);
+                        warpNoise.DomainWarp(wx, wy);
                         
                         // Elevation                       
                         float continentMask = std::max(continentBump(wx, wy, majorcenters), continentBump(wx, wy, islandCenters) * 0.6f);
@@ -343,6 +473,28 @@ class terrainGenerator {
                 imageData[i * 3 + 2] = c.b;
             }
             
+            const Color borderColor = {255, 30, 30};
+            int width = config.width, height = config.height;
+            
+            for (int y = 0; y < height; y++) {
+                for (int x = 0; x < width; x++) {
+                    int idx = y * width + x;
+                    float e = (world.elevation[idx] + 1.0f) * 0.5f;
+                    if (e < 0.46f) continue; // Skip oceans
+                    
+                    int myRegion = world.regionId[idx];
+                    int checkRadius = 2;
+                    bool isBorder = (x + checkRadius < width && world.regionId[idx + checkRadius] != myRegion) ||
+                                    (y + checkRadius < height && world.regionId[idx + checkRadius * width] != myRegion);
+                                    
+                    if (isBorder) {
+                        imageData[idx * 3 + 0] = borderColor.r;
+                        imageData[idx * 3 + 1] = borderColor.g;
+                        imageData[idx * 3 + 2] = borderColor.b;
+                    }
+                }
+            }
+            
             int result = stbi_write_png(filename.c_str(), config.width, config.height, 3, imageData.data(), config.width * 3);
             
             if (result) {
@@ -350,6 +502,26 @@ class terrainGenerator {
             } else {
                 std::cout << "ERROR SAVING THE IMAGE" << std::endl;
             }
+        }
+        
+        void saveRegionMap(const std::string filename) {
+            std::mt19937 colorRng(12345);
+            std::uniform_int_distribution<int> colorDist(30, 220);
+            
+            int maxId = *std::max_element(world.regionId.begin(), world.regionId.end());
+            std::vector<Color> regionColors(maxId + 1);
+            for (auto& c : regionColors) {
+                c = {(uint8_t)colorDist(colorRng), (uint8_t)colorDist(colorRng), (uint8_t)colorDist(colorRng)};
+            }
+            
+            std::vector<uint8_t> imageData(config.width * config.height * 3);
+            for (size_t i = 0; i < world.regionId.size(); i++) {
+                Color c = (world.regionId[i] >= 0) ? regionColors[world.regionId[i]] : Color{0, 0, 0};
+                imageData[i * 3 + 0] = c.r;
+                imageData[i * 3 + 1] = c.g;
+                imageData[i * 3 + 2] = c.b;
+            }
+            stbi_write_png(filename.c_str(), config.width, config.height, 3, imageData.data(), config.width * 3);
         }
         
         // Getter
@@ -370,6 +542,8 @@ int main(int argc, char* argv[]) {
         ScopedTimer timer("Save to disk");
         generator.saveToImage(config.output_file);
         std::cout << "Filename: " << config.output_file << std::endl;
+        std::string regionMapName = config.output_file.append("_REGION");
+        generator.saveRegionMap(regionMapName);
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << std::endl;
         return 1;
