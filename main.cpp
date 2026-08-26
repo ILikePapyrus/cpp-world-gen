@@ -240,18 +240,30 @@ class terrainGenerator {
             return seeds;
         }
         
-        std::vector<int> assignRegions(const std::vector<RegionCenter>& seeds, int width, int height) {
+        std::vector<int> assignRegions(const std::vector<RegionCenter>& seeds, int width, int height, int warpSeed) {
             std::vector<int> regionId(width * height, -1);
+            
+            FastNoiseLite borderWarp;
+            borderWarp.SetDomainWarpType(FastNoiseLite::DomainWarpType_OpenSimplex2);
+            borderWarp.SetSeed(warpSeed + 999);
+            borderWarp.SetFrequency(0.003f);
+            borderWarp.SetFractalType(FastNoiseLite::FractalType_DomainWarpProgressive);
+            borderWarp.SetFractalOctaves(2);
+            borderWarp.SetDomainWarpAmp(width * 0.015f);
             
             auto computeRows = [&](int yStart, int yEnd) {
                 for (int y = yStart; y < yEnd; y++) {
                     int index = y * width;
                     for (int x = 0; x < width; x++) {
+                        float wx = (float)x;
+                        float wy = (float)y;
+                        borderWarp.DomainWarp(wx, wy);
+                        
                         float bestDist = std::numeric_limits<float>::max();
                         int bestId = -1;
                         for (size_t i = 0; i < seeds.size(); i++) {
-                            float dx = x - seeds[i].x;
-                            float dy = y - seeds[i].y;
+                            float dx = wx - seeds[i].x;
+                            float dy = wy - seeds[i].y;
                             float  d = dx * dx + dy * dy;
                             if (d < bestDist) {
                                 bestDist = d;
@@ -375,7 +387,7 @@ class terrainGenerator {
             world = generate(config.width, config.height, config.seed.value(), config.frequency, config.octaves);
             
             auto seeds = generateRegionSeeds(world.elevation, config.width, config.height, config.seed.value(), config.numRegions);
-            world.regionId = assignRegions(seeds, config.width, config.height);
+            world.regionId = assignRegions(seeds, config.width, config.height, config.seed.value());
             
             std::cout << "TOT: " << world.elevation.size() << std::endl;
         }
@@ -415,7 +427,7 @@ class terrainGenerator {
             warpNoise.SetFractalType(FastNoiseLite::FractalType_DomainWarpProgressive);
             warpNoise.SetFractalOctaves(3);
             warpNoise.SetDomainWarpAmp(width * 0.06f); // Scales with map size
-                        
+                                    
             WorldData world;
             world.elevation.resize(width * height);
             world.moisture.resize(width * height);
@@ -572,9 +584,9 @@ int main(int argc, char* argv[]) {
         terrainGenerator generator(config);
         ScopedTimer timer("Save to disk");
         
-        std::string terrainPath   = config.output_dir + "/" + config.output_file;
-        std::string regionPath    = config.output_dir + "/" + config.output_file + "_REGION";
-        std::string heightmapPath = config.output_dir + "/" + config.output_file + "_HEIGHTMAP";
+        std::string terrainPath   = config.output_dir + "/" + config.output_file + ".png";
+        std::string regionPath    = config.output_dir + "/" + config.output_file + "_REGION.png";
+        std::string heightmapPath = config.output_dir + "/" + config.output_file + "_HEIGHTMAP.png";
         
         generator.saveToImage(terrainPath);
         generator.saveRegionMap(regionPath);
