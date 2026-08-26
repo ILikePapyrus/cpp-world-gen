@@ -50,27 +50,29 @@ struct Config {
 void printUsage(const char* programName) {
     std::cout << "Usage: " << programName << " [options]\n"
               << "Options:\n"
-              << "  -w, --width <int>       Map width  (default 1920)\n"
-              << "  -h, --height <int>      Map height (default 1080)\n"
-              << "  -s, --seed <int>        Noise seed (default random)\n"
-              << "  -f, --frequency <float> Base noise frequency (default 0.0003)\n"
+              << "  -w, --width <int>       Map width  (default: 1920)\n"
+              << "  -h, --height <int>      Map height (default: 1080)\n"
+              << "  -s, --seed <int>        Noise seed (default: random)\n"
+              << "  -f, --frequency <float> Base noise frequency (default: 0.0003)\n"
               << "      --octaves <int>     Fractal Octaves (default: 5)\n"
               << "      --regions <int>     Number of regions (default: 6)\n"
-              << "  -o, --output <path>     Output PNG filename (default date)\n"
-              << "  -d, --output-dir <path> Output directory (default /filename/)\n"
+              << "  -o, --output <path>     Output PNG filename (default: date)\n"
+              << "  -d, --output-dir <path> Output directory (default: /filename/)\n"
               << "      --help              Show this message\n";  
 }
 
 std::string getSystemDate() {
     std::time_t time = std::time({});
+    // Format of the string that will be used
     char timeString[std::size("yyyy-mm-ddThh:mm:ssZ")];
+    // Gets data in the format requested
     std::strftime(std::data(timeString), std::size(timeString), "%FT%TZ", std::localtime(&time));
             
     return timeString;
 }
 
 void ensureDirectory(const std::string& dir) {
-    std::filesystem::create_directory(dir);
+    std::filesystem::create_directory(dir); // Doesn't do anything if the folder already exists
 }
 
 Config parseArgs(int argc, char* argv[]) {
@@ -78,14 +80,17 @@ Config parseArgs(int argc, char* argv[]) {
            
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
-                
+        
+        // Get value after the flag
         auto nextValue = [&](const std::string& flag) -> std::string {
             if (i + 1 >= argc) {
+                // There's no value specified
                 throw std::runtime_error("Missing value for " + flag);
             }
             return argv[++i];
         };
-                
+        
+        // Assign specified value to relative config parameter
         if (arg == "-w" || arg == "--width") {
             config.width = std::stoi(nextValue(arg));
         } 
@@ -118,7 +123,8 @@ Config parseArgs(int argc, char* argv[]) {
             throw std::runtime_error("Unknown argument: " + arg);
         }
     }
-            
+    
+    // Sets defaults
     if (config.width  <= 0) config.width  = 1920;
     if (config.height <= 0) config.height = 1080;
            
@@ -130,14 +136,17 @@ Config parseArgs(int argc, char* argv[]) {
         config.output_dir = getSystemDate();
     }
     
+    // If no seed was specified via cmd flags, randomly chooses one
     if (!config.seed.has_value()) {
         std::random_device rd;
         std::mt19937 gen(rd());
         std::uniform_int_distribution<int> dist(1, 1000000);
         config.seed = dist(gen);
-        std::cout << "no seed specified. using generated seed " << std::endl;
+        std::cout << "No seed specified. using generated seed" << std::endl;
     }
+    
     std::cout << "Seed: " << config.seed.value() << std::endl;
+    // Appends seed to the filename
     config.output_file += "_S_";
     config.output_file += std::to_string(config.seed.value());
         
@@ -146,15 +155,16 @@ Config parseArgs(int argc, char* argv[]) {
 
 class terrainGenerator {
     private:
+        // Data relative to the world that will be saved
         struct WorldData {
-            std::vector<float> elevation;
-            std::vector<float> moisture;
-            std::vector<float> temperature;
-            std::vector<int>   regionId;
+            std::vector<float> elevation;    // Terrain
+            std::vector<float> moisture;     // Biomes
+            std::vector<float> temperature;  // Biomes
+            std::vector<int>   regionId;     // Borders
         };
-        struct ContinentCenter { float x, y, radiusX, radiusY, rotation, strength; };
-        struct RegionCenter { float x, y; };
-        struct Color { uint8_t r, g, b; };
+        struct ContinentCenter { float x, y, radiusX, radiusY, rotation, strength; }; // Generate more convincing continents
+        struct RegionCenter { float x, y; };                                          // Used for border generation
+        struct Color { uint8_t r, g, b; };                                            // Used to color the biomes
           
         WorldData world;        
         Config config;
@@ -243,6 +253,7 @@ class terrainGenerator {
         std::vector<int> assignRegions(const std::vector<RegionCenter>& seeds, int width, int height, int warpSeed) {
             std::vector<int> regionId(width * height, -1);
             
+            // Warp noise used to distort the straight borders generated by Voronoi graph
             FastNoiseLite borderWarp;
             borderWarp.SetDomainWarpType(FastNoiseLite::DomainWarpType_OpenSimplex2);
             borderWarp.SetSeed(warpSeed + 999);
@@ -334,6 +345,7 @@ class terrainGenerator {
             return std::min(total, 1.0f);
         }
         
+        // Choose the biome color based on WorldGen parameters
         Color getBiomeColor(float elevation, float moisture, float temperature) {
             float e = (elevation + 1.0f) * 0.5f; // Normalize [0, 1]
             
@@ -359,7 +371,7 @@ class terrainGenerator {
             }
         }
         
-        // Calculate distance between pixel and border
+        // Calculate distance between pixel and border to make islands and not terrain that will be cutoff by the image borders
         float calculateFalloff(int x, int y, int width, int height) {
             // Normalize coords [-1, 1]
             float nx = (2.0f * x / width)  - 1.0f;
@@ -382,17 +394,22 @@ class terrainGenerator {
                 
     public:   
         terrainGenerator(const Config& cfg) : config(cfg) {
-            
+            // Start WorldData generation timer
             ScopedTimer timer("Generation");
+            // Generate WorldData
             world = generate(config.width, config.height, config.seed.value(), config.frequency, config.octaves);
             
+            // Generate and assign regions based on WorldData
             auto seeds = generateRegionSeeds(world.elevation, config.width, config.height, config.seed.value(), config.numRegions);
             world.regionId = assignRegions(seeds, config.width, config.height, config.seed.value());
             
+            // Print total number of pixels generated
             std::cout << "TOT: " << world.elevation.size() << std::endl;
         }
         
+        // Actually generate the world
         WorldData generate(int width, int height, int seed, float frequency, int octaves) {
+            // Generate the elevation
             FastNoiseLite elevNoise;
             elevNoise.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2S);
             elevNoise.SetSeed(seed);
@@ -402,6 +419,7 @@ class terrainGenerator {
             elevNoise.SetFractalLacunarity(2.0f);
             elevNoise.SetFractalGain(0.5f);            
             
+            // Add details to the elevation
             FastNoiseLite detail;
             detail.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2S);
             detail.SetSeed(seed + 1); // Offset so it's not identical to elevation'
@@ -409,6 +427,7 @@ class terrainGenerator {
             detail.SetFractalType(FastNoiseLite::FractalType_FBm);
             detail.SetFractalOctaves(3);
             
+            // Generate the moisture map
             FastNoiseLite moistureNoise;
             moistureNoise.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2S);
             moistureNoise.SetFrequency(0.0015f);
@@ -416,26 +435,31 @@ class terrainGenerator {
             moistureNoise.SetFractalOctaves(4);
             moistureNoise.SetSeed(1337);
             
+            // Generate the temperature map
             FastNoiseLite tempNoise;
             tempNoise.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2S);
             tempNoise.SetFrequency(0.002f);
             tempNoise.SetSeed(9001);
 
+            // Generate the warp noise to make the world seem more natural
             FastNoiseLite warpNoise;
             warpNoise.SetDomainWarpType(FastNoiseLite::DomainWarpType_OpenSimplex2);
             warpNoise.SetFrequency(0.0015f);
             warpNoise.SetFractalType(FastNoiseLite::FractalType_DomainWarpProgressive);
             warpNoise.SetFractalOctaves(3);
             warpNoise.SetDomainWarpAmp(width * 0.06f); // Scales with map size
-                                    
+            
+            // Actually save the noises
             WorldData world;
             world.elevation.resize(width * height);
             world.moisture.resize(width * height);
             world.temperature.resize(width * height);
             
+            // Generate the centers of the landmasses
             auto majorcenters = generateContinentCenters(width, height, seed, 4);
             auto islandCenters = generateContinentCenters(width, height, seed + 500, 8);
             
+            // Apply the noisemaps to each other
             auto computeRows = [&](int yStart, int yEnd) {
                 for (int y = yStart; y < yEnd; y++) {
                     int index = y * width;
@@ -488,6 +512,7 @@ class terrainGenerator {
             return world;
         }
         
+        // Save the biome map to png
         void saveToImage(const std::string filename) {
             std::vector<uint8_t> imageData(config.width * config.height * 3);
             
@@ -499,9 +524,10 @@ class terrainGenerator {
                 imageData[i * 3 + 2] = c.b;
             }
             
-            const Color borderColor = {255, 30, 30};
+            const Color borderColor = {255, 0, 0};
             int width = config.width, height = config.height;
             
+            // Draw Voronoi borders on the biome map
             for (int y = 0; y < height; y++) {
                 for (int x = 0; x < width; x++) {
                     int idx = y * width + x;
@@ -521,6 +547,7 @@ class terrainGenerator {
                 }
             }
             
+            // Write to disk
             int result = stbi_write_png(filename.c_str(), config.width, config.height, 3, imageData.data(), config.width * 3);
             
             if (result) {
@@ -530,7 +557,9 @@ class terrainGenerator {
             }
         }
         
+        // Save the Voronoi region map to disk
         void saveRegionMap(const std::string filename) {
+            // Generate random colors for each region
             std::mt19937 colorRng(12345);
             std::uniform_int_distribution<int> colorDist(30, 220);
             
@@ -547,9 +576,12 @@ class terrainGenerator {
                 imageData[i * 3 + 1] = c.g;
                 imageData[i * 3 + 2] = c.b;
             }
+            
+            // Write the image to disk
             stbi_write_png(filename.c_str(), config.width, config.height, 3, imageData.data(), config.width * 3);
         }
         
+        // Save the heightmap to disk
         void saveHeightmap(const std::string filename) {
             std::vector<uint8_t> imageData(config.width * config.height);
             
@@ -578,10 +610,14 @@ class terrainGenerator {
 
 int main(int argc, char* argv[]) {
     try {
+        // Edit the default values with the arguments passed from cmd
         Config config = parseArgs(argc, argv);
         ensureDirectory(config.output_dir);
-                
+        
+        // Create generator obj
         terrainGenerator generator(config);
+        
+        // Start disk timer
         ScopedTimer timer("Save to disk");
         
         std::string terrainPath   = config.output_dir + "/" + config.output_file + ".png";
