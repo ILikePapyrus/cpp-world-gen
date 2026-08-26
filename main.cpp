@@ -17,6 +17,8 @@
 #include <random>
 #include <thread>
 #include <filesystem>
+#include <queue>
+#include <atomic>
 
 #include "FastNoiseLite.h"
 
@@ -173,7 +175,7 @@ class terrainGenerator {
           
         WorldData world;        
         Config config;
-                              
+                     
         std::vector<int> labelLandmasses(const std::vector<float>& elevation, int width, int height, int& landmassCount) {
             std::vector<int> landId(width * height, -1);
             int currentId = 0;
@@ -199,6 +201,7 @@ class terrainGenerator {
                     
                     static const int dx[] = {1, -1, 0, 0};
                     static const int dy[] = {0, 0, 1, -1};
+            
                     for (int d = 0; d < 4; d++) {
                         int nx = x + dx[d], ny = y + dy[d];
                         if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
@@ -253,6 +256,145 @@ class terrainGenerator {
             }
             
             return seeds;
+        }
+        
+        std::vector<int> assignRegionsCostBased(const std::vector<RegionCenter>& seeds, const std::vector<float>& elevation, int width, int height, int seed) {
+            std::vector<int>   regionId(width * height, -1);
+            std::vector<float> cost(width * height, std::numeric_limits<float>::max());
+            
+            for (size_t i = 0; i < seeds.size(); i++) {
+                int idx = (int)seeds[i].y * width + (int)seeds[i].x;
+                cost[idx] = 0.0f;
+                regionId[idx] = (int)i;
+            }
+            
+            static const int dx[] = {1, -1, 0, 0, 1, 1, -1, -1};
+            static const int dy[] = {0, 0, 1, -1, 1, -1, 1, -1};
+            static const float baseStepCost[] = {1.0f, 1.0f, 1.0f, 1.41421356f, 1.41421356f, 1.41421356f, 1.41421356f};
+            
+            // Noise for plains, so that the borders will look natural not only on mountains
+            FastNoiseLite costNoise;
+            costNoise.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2S);
+            costNoise.SetSeed(seed + 555);
+            costNoise.SetFrequency(0.01f);
+            
+            auto moveCost = [&](int a, int b, int ax, int ay, int neighborDir) {
+                float elevDiff = std::abs(elevation[a] - elevation[b]);
+                float noiseWobble = (costNoise.GetNoise((float)ax, (float)ay) + 1.0f) * 0.5f; // Normalized [0, 1]
+                return baseStepCost[neighborDir] * (1.0f + elevDiff * 40.0f + noiseWobble * 0.3f); // Higher multiplier of elevDiff = mountains block more
+            };
+            
+            unsigned int numThreads = std::max(1u, std::thread::hardware_concurrency());
+            int rowsPerThread = (height + (int)numThreads - 1) / (int)numThreads;
+            
+            std::vector<std::pair<int, int>> ranges; // [yStart, yEnd] per thread
+            for (unsigned int t = 0; t < numThreads; t++) {
+                int yStart = (int)t * rowsPerThread;
+                int yEnd   = std::min(height, yStart + rowsPerThread);
+                if (yStart < yEnd) ranges.push_back({yStart, yEnd});
+            }
+                        
+            // Full Dijkstra confined to [yStart, yEnd] rows
+            // Writes ONLY to indices within its own rows
+            auto localDijkstra = [&](int yStart, int yEnd, std::atomic<bool>& changed) {
+                using QueueEntry = std::pair<float, int>;
+                std::priority_queue<QueueEntry, std::vector<QueueEntry>, std::greater<>> pq;
+                
+                for (int y = yStart; y < yEnd; y++) {
+                    for (int x = 0; x < width; x++) {
+                        int idx = y * width + x;
+                        if (cost[idx] < std::numeric_limits<float>::max()) {
+                            pq.push({cost[idx], idx});
+                        }
+                    }
+                }
+                
+                while (!pq.empty()) {
+                    auto [curCost, idx] = pq.top();
+                    pq.pop();
+                    if (curCost > cost[idx]) continue; // Stale entry
+                    
+                    int x = idx % width;
+                    int y = idx / width;
+                    
+                    for (int d = 0; d < 4; d++) {
+                        int nx = x + dx[d], ny = y + dy[d];
+                        if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+                        if (ny < yStart || ny >= yEnd) continue; // Never write outside own block
+                        int nIdx = ny * width + nx;
+                        
+                        float newCost = cost[idx] + moveCost(idx, nIdx, nx, ny, d);
+                        if (newCost < cost[nIdx] - 1e-6f) {
+                            cost[nIdx]     = newCost;
+                            regionId[nIdx] = regionId[idx];
+                            pq.push({newCost, nIdx});
+                            changed = true; 
+                        }
+                    }
+                }
+            };
+            
+            // Snapshot of two rows adjacent to block, taken before start of round
+            // No threads read a row while another is writing to it
+            auto seedGhostRows = [&](int blockIdx) {
+                int yStart = ranges[blockIdx].first;
+                int yEnd   = ranges[blockIdx].second;
+                
+                if (yStart > 0) {
+                    for (int x = 0; x < width; x++) {
+                        int aboveIdx = (yStart - 1) * width + x;
+                        int ownIdx   = yStart * width + x;
+                        if (cost[aboveIdx] < std::numeric_limits<float>::max()) {
+                            float candidate = cost[aboveIdx] + moveCost(aboveIdx, ownIdx, x, yStart, 2);
+                            if (candidate < cost[ownIdx]) {
+                                cost[ownIdx]     = candidate;
+                                regionId[ownIdx] = regionId[aboveIdx];
+                            }
+                        }
+                    }
+                }
+                if (yEnd < height) {
+                    for (int x = 0; x < width; x++) {
+                        int belowIdx = yEnd * width + x;
+                        int ownIdx   = (yEnd - 1) * width + x;
+                        if (cost[belowIdx] < std::numeric_limits<float>::max()) {
+                            float candidate = cost[belowIdx] + moveCost(belowIdx, ownIdx, x, yEnd - 1, 3);
+                            if (candidate < cost[ownIdx]) {
+                                cost[ownIdx]     = candidate;
+                                regionId[ownIdx] = regionId[belowIdx];
+                            }
+                        }
+                    }
+                }
+            };
+            
+            bool anyChanged = true;
+            int round = 0;
+            int maxRounds = (int)ranges.size() * 3 + 4; // Safety cap
+            
+            while (anyChanged && round < maxRounds) {
+                anyChanged = false;
+                
+                // Pull boundary values from neighboring blocks before thread runs
+                for (size_t i = 0; i < ranges.size(); i++) {
+                    seedGhostRows((int)i);
+                }
+                
+                std::vector<std::thread> threads;
+                std::vector<std::atomic<bool>> changedFlags(ranges.size());
+                for (auto& f : changedFlags) f = false;
+                
+                for (size_t i = 0; i < ranges.size(); i++) {
+                    threads.emplace_back(localDijkstra, ranges[i].first, ranges[i].second, std::ref(changedFlags[i]));
+                }
+                for (auto& t : threads) t.join();
+                
+                for (auto& f : changedFlags) if (f) anyChanged = true;
+                
+                round++;
+            }
+            
+            return regionId;
         }
         
         std::vector<int> assignRegions(const std::vector<RegionCenter>& seeds, int width, int height, int warpSeed) {
@@ -406,7 +548,9 @@ class terrainGenerator {
             
             // Generate and assign regions based on WorldData
             auto seeds = generateRegionSeeds(world.elevation, config.width, config.height, config.seed.value(), config.numRegions);
-            world.regionId = assignRegions(seeds, config.width, config.height, config.seed.value());
+            ScopedTimer borderTimer("Border generation");
+            world.regionId = assignRegionsCostBased(seeds, world.elevation, config.width, config.height, config.seed.value());
+            //world.regionId = assignRegions(seeds, config.width, config.height, config.seed.value());
             
             // Print total number of pixels generated
             std::cout << "TOT: " << world.elevation.size() << std::endl;
@@ -529,7 +673,7 @@ class terrainGenerator {
                 imageData[i * 3 + 2] = c.b;
             }
             
-            const Color borderColor = {255, 0, 0};
+            const Color borderColor = {255, 30, 30};
             int width = config.width, height = config.height;
             
             // Draw Voronoi borders on the biome map
