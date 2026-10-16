@@ -23,6 +23,7 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
+// Timer
 class ScopedTimer {
     std::chrono::high_resolution_clock::time_point start;
     std::string label;
@@ -36,6 +37,7 @@ public:
     }
 };
 
+// Default image/generator config
 struct Config {
     int width               = 1920;
     int height              = 1080;
@@ -47,6 +49,7 @@ struct Config {
     int numRegions          = 6;
 };
 
+// -h menu
 void printUsage(const char* programName) {
     std::cout << "Usage: " << programName << " [options]\n"
               << "Options:\n"
@@ -62,6 +65,7 @@ void printUsage(const char* programName) {
               << "      --help              Show this message\n";  
 }
 
+// System date for filenames
 std::string getSystemDate() {
     std::time_t time = std::time({});
     // Format of the string that will be used
@@ -72,16 +76,19 @@ std::string getSystemDate() {
     return timeString;
 }
 
+// Checks directory existance
 void ensureDirectory(const std::string& dir) {
     std::filesystem::create_directory(dir); // Doesn't do anything if the folder already exists
 }
 
+// Parse args and flags before generator execution
 Config parseArgs(int argc, char* argv[]) {
     Config config;
-           
+
     for (int i = 1; i < argc; i++) {
+        // Gets argument
         std::string arg = argv[i];
-        
+
         // Get value after the flag
         auto nextValue = [&](const std::string& flag) -> std::string {
             if (i + 1 >= argc) {
@@ -158,6 +165,7 @@ Config parseArgs(int argc, char* argv[]) {
     return config;
 }
 
+// Terrain Generator
 class terrainGenerator {
     private:
         // Data relative to the world that will be saved
@@ -170,10 +178,11 @@ class terrainGenerator {
         struct ContinentCenter { float x, y, radiusX, radiusY, rotation, strength; }; // Generate more convincing continents
         struct RegionCenter { float x, y; };                                          // Used for border generation
         struct Color { uint8_t r, g, b; };                                            // Used to color the biomes
-          
+
         WorldData world;        
         Config config;
-                              
+
+        // Which pixels belong to the same Landmass
         std::vector<int> labelLandmasses(const std::vector<float>& elevation, int width, int height, int& landmassCount) {
             std::vector<int> landId(width * height, -1);
             int currentId = 0;
@@ -215,7 +224,8 @@ class terrainGenerator {
             landmassCount = currentId;
             return landId;
         }
-        
+
+        // Choose where Regions originate from
         std::vector<RegionCenter> generateRegionSeeds(const std::vector<float>& elevation, int width, int height, int seed, int totalRegions) {
             int landmassCount = 0;
             std::vector<int> landId = labelLandmasses(elevation, width, height, landmassCount);
@@ -254,7 +264,8 @@ class terrainGenerator {
             
             return seeds;
         }
-        
+
+        // Build Voronoi regions
         std::vector<int> assignRegions(const std::vector<RegionCenter>& seeds, int width, int height, int warpSeed) {
             std::vector<int> regionId(width * height, -1);
             
@@ -304,7 +315,8 @@ class terrainGenerator {
             
             return regionId;
         }
-        
+
+        // Create random Continent seeds
         std::vector<ContinentCenter> generateContinentCenters(int width, int height, int seed, int count) {
             std::mt19937 rng(seed);
             std::uniform_real_distribution<float> xDist(width * 0.08f, width * 0.92f);
@@ -327,7 +339,8 @@ class terrainGenerator {
             }
             return centers;
         }
-        
+
+        // How much land influence a point gets [0, 1]
         float continentBump(float x, float y, const std::vector<ContinentCenter>& centers) {
             float total = 0.0f;
             
