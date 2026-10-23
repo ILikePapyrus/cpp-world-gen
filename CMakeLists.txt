@@ -9,4 +9,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Definisce l'eseguibile e i file sorgenti associati
-add_executable(world-gen main.cpp)
+add_executable(world-gen main.cpp
+        src/ScopedTimer.h
+        src/Config.cpp
+        src/Config.h
+        src/TerrainGenerator.cpp
+        src/TerrainGenerator.h
+)
