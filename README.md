@@ -1,6 +1,20 @@
 # cpp-world-gen
-
 Simple 2D world generator, configurable via cmd flags (once built).
+
+<details>
+<summary><i>Example of a generated Mercator Map with Region Borders</i></summary>
+<img src="README_img/_S_6516513.png">
+</details>
+
+<details>
+<summary><i>Example of a generated heightmap for a Mercator Map</i></summary>
+<img src="README_img/_S_6516513_HEIGHTMAP.png">
+</details>
+
+<details>
+<summary><i>Example of a generated region map for a Mercator Map</i></summary>
+<img src="README_img/_S_6516513_REGION.png">
+</details>
 
 ### Usage
 Help window:
