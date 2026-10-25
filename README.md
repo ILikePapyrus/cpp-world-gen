@@ -17,11 +17,11 @@ Simple 2D world generator, configurable via cmd flags (once built).
 </details>
 
 ### How to build
+> [!IMPORTANT]
+> Since I mainly use the integrated build feature of CLion on Windows instead of the cmd, I wrote these instructions with the help of the [CMake Tutorials](https://cmake.org/cmake/help/latest/guide/tutorial/index.html), but I haven't tested them. If you have problems with these instructions, or have tested them but found errors, open a PR with a fix. Thanks!
+
 <details>
 <summary><i>Windows</i></summary>
-
-> [!IMPORTANT]
-> Since I mainly use the integrated build feature of CLion instead of the cmd, I wrote these instructions with the help of the [CMake Tutorials](https://cmake.org/cmake/help/latest/guide/tutorial/index.html), but I haven't tested them. If you have problems with these instructions, or have tested them but found errors, open a PR with a fix. Thanks!
 
 1. Install [CMake](https://cmake.org/download/)
 2. Clone the repository
@@ -50,8 +50,7 @@ Simple 2D world generator, configurable via cmd flags (once built).
 <details>
 <summary><i>Linux <b>(Coming soon)</b></i></summary>
 
->[!NOTE]
->My current Linux environment is not fully set up/working, so when I'll have it running I'll write instructions for Linux. I won't test the build with every major distro, only with Arch (since it's what I use). If you use another distro and have build instructions (which <b>I think</b> could be the same as Windows), open a PR!
+My current Linux environment is not fully set up/working, so when I'll have it running I'll write instructions for Linux. I won't test the build with every major distro, only with Arch (since it's what I use). If you use another distro and have build instructions (which <b>I think</b> could be the same as Windows), open a PR!
 
 </details>
 
