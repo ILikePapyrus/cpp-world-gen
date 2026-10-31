@@ -79,3 +79,4 @@ Options:
 - [ ] Realistic borders
 - [ ] Complete README.md
 - [ ] Add LICENSE
+- [ ] GUI
